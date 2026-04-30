@@ -39,11 +39,11 @@ RUN DATABASE_URL="postgres://x" pnpm build
 #         real directory (no symlinks), so it survives a COPY into a runtime
 #         image with a different filesystem layout.
 FROM builder AS api-bundle
-RUN pnpm --filter=@a11y/api --prod deploy /out
+RUN pnpm --filter=@a11y/api --prod --legacy deploy /out
 
 # ---- 3b. Same treatment for the dashboard. ----
 FROM builder AS dashboard-bundle
-RUN pnpm --filter=@a11y/dashboard --prod deploy /out
+RUN pnpm --filter=@a11y/dashboard --prod --legacy deploy /out
 
 # ---- 4a. API runtime: distroless, non-root, smallest possible attack surface
 FROM gcr.io/distroless/nodejs20-debian12:nonroot AS api
