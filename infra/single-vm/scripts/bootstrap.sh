@@ -81,19 +81,37 @@ sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='a11y'" | grep 
 sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='a11y'" | grep -q 1 \
   || sudo -u postgres psql -c "CREATE DATABASE a11y OWNER a11y;"
 
-echo "==> Redis 7 with auth + AOF"
+echo "==> Redis with auth + AOF"
 apt-get install -y redis-server
-mkdir -p /etc/redis
-cat > /etc/redis/redis.conf <<EOF
-bind 127.0.0.1
-port 6379
+# DON'T overwrite Ubuntu's redis.conf (it sets pidfile/dir/supervised that
+# systemd needs). Append our overrides — redis takes the LAST occurrence of
+# each directive, so this safely overrides the package defaults. Idempotent:
+# strip any prior a11y block before re-appending.
+sed -i '/# --- a11y deploy overrides BEGIN ---/,/# --- a11y deploy overrides END ---/d' /etc/redis/redis.conf
+cat >> /etc/redis/redis.conf <<EOF
+# --- a11y deploy overrides BEGIN ---
+bind 127.0.0.1 ::1
 requirepass $REDIS_PASSWORD
 appendonly yes
 maxmemory-policy allkeys-lru
 protected-mode yes
+# --- a11y deploy overrides END ---
 EOF
 systemctl enable --now redis-server
 systemctl restart redis-server
+# Confirm it's actually up — redis takes a couple seconds to bind sometimes.
+for i in 1 2 3 4 5; do
+  if redis-cli -a "$REDIS_PASSWORD" --no-auth-warning ping 2>/dev/null | grep -q PONG; then
+    echo "    ✓ Redis up"
+    break
+  fi
+  sleep 1
+  if [[ $i -eq 5 ]]; then
+    echo "    ✗ Redis didn't come up. Last log:"
+    journalctl -u redis-server -n 30 --no-pager
+    exit 1
+  fi
+done
 
 echo "==> Service user"
 id -u a11y >/dev/null 2>&1 || useradd --system --create-home --shell /usr/sbin/nologin a11y
