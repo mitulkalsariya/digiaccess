@@ -1,0 +1,214 @@
+// Prisma schema — all tables required for v1.0
+// Convention: snake_case in DB, camelCase in TS via @map / @@map.
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-arm64-openssl-3.0.x", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ----------------------------------------------------------------------------
+// Identity
+// ----------------------------------------------------------------------------
+
+model Team {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String
+  slug        String   @unique
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  members     TeamMembership[]
+  sites       Site[]
+
+  @@map("teams")
+}
+
+model User {
+  id          String   @id @default(uuid()) @db.Uuid
+  email       String   @unique
+  name        String
+  ssoSubject  String?  @unique @map("sso_subject")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  lastLoginAt DateTime? @map("last_login_at")
+
+  memberships TeamMembership[]
+  scans       Scan[]
+  triages     ViolationTriage[]
+
+  @@map("users")
+}
+
+model TeamMembership {
+  teamId  String @map("team_id") @db.Uuid
+  userId  String @map("user_id") @db.Uuid
+  role    String @default("member") // member | admin
+
+  team    Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([teamId, userId])
+  @@index([userId])
+  @@map("team_memberships")
+}
+
+// ----------------------------------------------------------------------------
+// Sites + auth profiles
+// ----------------------------------------------------------------------------
+
+model Site {
+  id              String   @id @default(uuid()) @db.Uuid
+  name            String
+  baseUrl         String   @map("base_url")
+  ownerTeamId     String   @map("owner_team_id") @db.Uuid
+  slackChannel    String?  @map("slack_channel")
+  jiraProjectKey  String?  @map("jira_project_key")
+  includePatterns String[] @map("include_patterns")
+  excludePatterns String[] @map("exclude_patterns")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  ownerTeam       Team     @relation(fields: [ownerTeamId], references: [id], onDelete: Cascade)
+  scans           Scan[]
+  scheduledScans  ScheduledScan[]
+  authProfiles    AuthProfile[]
+
+  @@index([ownerTeamId])
+  @@map("sites")
+}
+
+model AuthProfile {
+  id              String   @id @default(uuid()) @db.Uuid
+  siteId          String   @map("site_id") @db.Uuid
+  name            String
+  method          String   // 'cookie' | 'form' | 'recorded'
+  // S-3: KMS envelope encryption — payload encrypted with a per-record DEK,
+  // DEK encrypted with the KMS CMK identified by kmsKeyId.
+  configEnc       Bytes    @map("config_enc")     // AES-256-GCM ciphertext (under DEK)
+  configIv        Bytes    @map("config_iv")
+  configTag       Bytes    @map("config_tag")
+  configDekCipher Bytes?   @map("config_dek_cipher") // KMS-encrypted DEK
+  kmsKeyId        String   @map("kms_key_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  expiresAt       DateTime? @map("expires_at")
+
+  site            Site     @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  scans           Scan[]
+
+  @@index([siteId])
+  @@map("auth_profiles")
+}
+
+// ----------------------------------------------------------------------------
+// Scans + violations
+// ----------------------------------------------------------------------------
+
+model Scan {
+  id              String   @id @default(uuid()) @db.Uuid
+  siteId          String?  @map("site_id") @db.Uuid
+  teamId          String?  @map("team_id") @db.Uuid
+  url             String
+  type            String   // 'single-page' | 'crawl' | 'scheduled'
+  status          String   // 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+  isPrivate       Boolean  @default(false) @map("is_private")
+  pagesScanned    Int      @default(0) @map("pages_scanned")
+  errorMessage    String?  @map("error_message")
+  authProfileId   String?  @map("auth_profile_id") @db.Uuid
+  createdById     String   @map("created_by_id") @db.Uuid
+  createdAt       DateTime @default(now()) @map("created_at")
+  startedAt       DateTime? @map("started_at")
+  completedAt     DateTime? @map("completed_at")
+
+  site            Site?    @relation(fields: [siteId], references: [id], onDelete: SetNull)
+  authProfile     AuthProfile? @relation(fields: [authProfileId], references: [id], onDelete: SetNull)
+  createdBy       User     @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  violations      Violation[]
+
+  @@index([siteId, createdAt])
+  @@index([teamId, createdAt])
+  @@index([createdById])
+  @@index([status])
+  @@map("scans")
+}
+
+model Violation {
+  id              String   @id @default(uuid()) @db.Uuid
+  scanId          String   @map("scan_id") @db.Uuid
+  ruleId          String   @map("rule_id")
+  wcagSc          String   @map("wcag_sc")
+  wcagLevel       String   @map("wcag_level")  // 'A' | 'AA' | 'AAA'
+  wcagVersion     String   @map("wcag_version") // '2.0' | '2.1' | '2.2'
+  severity        String   // critical | serious | moderate | minor
+  confidence      String   // high | medium | needs-review
+  sources         String[] // ['axe', 'pa11y', 'manual', 'custom']
+  message         String
+  helpUrl         String?  @map("help_url")
+  pageUrl         String   @map("page_url")
+  selector        String
+  htmlSnippet     String?  @map("html_snippet")
+  viewport        String?  // 'mobile' | 'tablet' | 'desktop'
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  scan            Scan     @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  triage          ViolationTriage?
+
+  // T-035: diff classifier matches by (rule_id, selector, page_url)
+  @@index([scanId])
+  @@index([wcagSc])
+  @@index([ruleId, selector, pageUrl])
+  @@map("violations")
+}
+
+model ViolationTriage {
+  violationId   String   @id @map("violation_id") @db.Uuid
+  state         String   // 'untriaged' | 'confirmed' | 'false-positive' | 'needs-review'
+  triagedById   String?  @map("triaged_by_id") @db.Uuid
+  triagedAt     DateTime? @map("triaged_at")
+  notes         String?
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  violation     Violation @relation(fields: [violationId], references: [id], onDelete: Cascade)
+  triagedBy     User?     @relation(fields: [triagedById], references: [id], onDelete: SetNull)
+
+  @@index([state])
+  @@map("violation_triage")
+}
+
+model ScheduledScan {
+  id          String   @id @default(uuid()) @db.Uuid
+  siteId      String   @map("site_id") @db.Uuid
+  cron        String
+  timezone    String   @default("UTC")
+  enabled     Boolean  @default(true)
+  lastRunAt   DateTime? @map("last_run_at")
+  nextRunAt   DateTime? @map("next_run_at")
+  consecutiveFailures Int @default(0) @map("consecutive_failures")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  site        Site     @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@index([enabled, nextRunAt])
+  @@map("scheduled_scans")
+}
+
+model AuditLog {
+  id          BigInt   @id @default(autoincrement())
+  actorId     String?  @map("actor_id") @db.Uuid
+  action      String
+  targetType  String?  @map("target_type")
+  targetId    String?  @map("target_id")
+  metadata    Json?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([actorId, createdAt])
+  @@index([targetType, targetId])
+  @@map("audit_log")
+}

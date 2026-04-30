@@ -1,0 +1,64 @@
+{{- if .Values.networkPolicy.enabled }}
+# S-15: deny-by-default. Pods can only egress to:
+#   - the cluster DNS service (kube-dns)
+#   - RDS endpoint (Postgres)
+#   - ElastiCache endpoint (Redis)
+#   - the IdP (configured via networkPolicy.idpCidrs)
+#   - the public internet (HTTPS only) for axe/Pa11y to fetch scan targets +
+#     Slack/Teams/Jira webhooks. Lock this further once the org defines an
+#     egress proxy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "a11y.fullname" . }}-default-deny
+  labels: {{- include "a11y.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "a11y.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # Allow ingress only from the same namespace (ALB target groups).
+    - from:
+        - namespaceSelector: {}
+      ports:
+        - { protocol: TCP, port: 3001 }
+        - { protocol: TCP, port: 3000 }
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    # Postgres
+    {{- range .Values.networkPolicy.dbCidrs }}
+    - to:
+        - ipBlock: { cidr: {{ . | quote }} }
+      ports:
+        - { protocol: TCP, port: 5432 }
+    {{- end }}
+    # Redis (TLS)
+    {{- range .Values.networkPolicy.redisCidrs }}
+    - to:
+        - ipBlock: { cidr: {{ . | quote }} }
+      ports:
+        - { protocol: TCP, port: 6379 }
+    {{- end }}
+    # IdP (HTTPS) — configured per environment
+    {{- range .Values.networkPolicy.idpCidrs }}
+    - to:
+        - ipBlock: { cidr: {{ . | quote }} }
+      ports:
+        - { protocol: TCP, port: 443 }
+    {{- end }}
+    # Internet HTTPS — needed by Playwright/Pa11y to scan targets and by
+    # integrations to call Jira/Slack/Teams. We exclude RFC1918 ranges to
+    # avoid traffic to internal subnets bypassing the rules above.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16]
+      ports:
+        - { protocol: TCP, port: 443 }
+{{- end }}

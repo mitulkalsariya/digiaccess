@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "types": ["node"],
+    "tsBuildInfoFile": "./dist/.tsbuildinfo"
+  },
+  "references": [
+    { "path": "../../packages/shared-types" },
+    { "path": "../../packages/wcag-rules" },
+    { "path": "../../packages/axe-mapping" }
+  ],
+  "include": ["src/**/*"]
+}

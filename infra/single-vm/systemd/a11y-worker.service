@@ -1,0 +1,40 @@
+[Unit]
+Description=A11y Audit Tool — scan worker
+After=network.target postgresql.service redis-server.service
+Wants=postgresql.service redis-server.service
+
+[Service]
+Type=simple
+User=a11y
+Group=a11y
+WorkingDirectory=/opt/a11y/repo/apps/api
+Environment=NODE_ENV=production
+Environment=LOG_LEVEL=info
+Environment=DATABASE_URL_FILE=/etc/a11y/secrets/database_url
+Environment=REDIS_URL_FILE=/etc/a11y/secrets/redis_url
+Environment=JWT_SECRET_FILE=/etc/a11y/secrets/jwt_secret
+Environment=CRED_ENCRYPTION_KEY_FILE=/etc/a11y/secrets/cred_key
+# Tune to match VM CPU/RAM. Each Playwright Chromium ≈ 200MB.
+Environment=WORKER_CONCURRENCY=3
+# Playwright caches Chromium under HOME — give it a writable spot.
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/a11y/.cache/ms-playwright
+
+ExecStartPre=/usr/bin/env pnpm exec playwright install chromium
+ExecStart=/usr/bin/node /opt/a11y/repo/apps/api/dist/worker.js
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/a11y/worker.log
+StandardError=append:/var/log/a11y/worker.log
+
+# Hardening — slightly looser than the API because Playwright needs to spawn
+# Chromium subprocesses and write the browser cache.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+ReadWritePaths=/var/log/a11y /opt/a11y/.cache /tmp
+RestrictNamespaces=no  # Chromium uses user namespaces for its own sandbox
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,97 @@
+name: Deploy → production
+
+# Manual trigger only — production never auto-deploys. Operator picks a SHA
+# (or release tag) that has already passed CI + been verified in staging.
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Git SHA or tag to deploy (must have a green staging deploy)'
+        required: true
+        type: string
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  NODE_VERSION: '20'
+  PNPM_VERSION: '10'
+  TURBO_TELEMETRY_DISABLED: 1
+
+jobs:
+  deploy:
+    name: Deploy to production
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # GitHub environment "production" has required reviewers configured —
+    # this is what enforces the manual-approval gate per the AC.
+    environment:
+      name: production
+      url: ${{ vars.PRODUCTION_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.PRODUCTION_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Promote image (re-tag staging image as production)
+        env:
+          ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}
+          IMAGE_TAG: ${{ inputs.sha }}
+        run: |
+          # Production must reuse the exact image that passed staging — never rebuild.
+          MANIFEST=$(aws ecr batch-get-image --repository-name a11y-api \
+            --image-ids imageTag="$IMAGE_TAG" \
+            --query 'images[].imageManifest' --output text || true)
+          if [ -z "$MANIFEST" ]; then
+            echo "::error::Image $IMAGE_TAG not found in ECR — was it deployed to staging first?"
+            exit 1
+          fi
+          aws ecr put-image --repository-name a11y-api \
+            --image-tag production --image-manifest "$MANIFEST"
+
+      - name: Helm deploy
+        env:
+          IMAGE_TAG: ${{ inputs.sha }}
+        run: |
+          if [ -d infra/helm/a11y ]; then
+            aws eks update-kubeconfig --name "${{ vars.PRODUCTION_CLUSTER }}" \
+              --region "${{ vars.AWS_REGION }}"
+            helm upgrade --install a11y infra/helm/a11y \
+              -n a11y-production --create-namespace \
+              -f infra/helm/a11y/values.prod.yaml \
+              --set image.tag="$IMAGE_TAG" \
+              --wait --timeout 15m
+          else
+            echo "::notice::Helm chart not yet present — skipping deploy (lands in T-008)"
+          fi
+
+      - name: Smoke test
+        run: |
+          if [ -n "${{ vars.PRODUCTION_URL }}" ]; then
+            curl -fsS --retry 5 --retry-delay 10 "${{ vars.PRODUCTION_URL }}/health" || \
+              { echo "Production /health failed after deploy"; exit 1; }
+          fi

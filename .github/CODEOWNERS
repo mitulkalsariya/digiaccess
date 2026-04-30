@@ -1,0 +1,11 @@
+# Default owners — at least one approval required on every PR (DoD: "Code reviewed by at least one other engineer")
+*       @platform-team
+
+# Surface-specific owners
+/apps/api/             @backend-leads
+/apps/dashboard/       @frontend-leads
+/apps/extension/       @frontend-leads
+/packages/wcag-rules/  @a11y-sme @backend-leads
+/packages/axe-mapping/ @a11y-sme @backend-leads
+/infra/                @platform-team
+/.github/workflows/    @platform-team

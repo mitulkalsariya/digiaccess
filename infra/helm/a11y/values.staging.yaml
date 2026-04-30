@@ -1,0 +1,14 @@
+api:
+  replicas: 1
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+
+dashboard:
+  replicas: 1
+
+worker:
+  replicas: 1
+
+ingress:
+  host: a11y-staging.example.com

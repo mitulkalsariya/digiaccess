@@ -1,0 +1,149 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# One run per branch; cancel older PR runs when a new commit lands.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  NODE_VERSION: '20'
+  PNPM_VERSION: '10'
+  TURBO_TELEMETRY_DISABLED: 1
+
+jobs:
+  # ---- Setup gate: install once, share node_modules + turbo cache via actions/cache ----
+  setup:
+    name: Install
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      pnpm-store: ${{ steps.pnpm-store.outputs.path }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+      - id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+  # ---- Quality gates run in parallel; each ≤ 3 minutes keeps total under 5 ----
+  lint:
+    name: Lint
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm format:check
+      - run: pnpm lint
+
+  type-check:
+    name: Type-check
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm type-check
+
+  build-and-test:
+    name: Build & test (${{ matrix.workspace }})
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        workspace:
+          - '@a11y/shared-types'
+          - '@a11y/wcag-rules'
+          - '@a11y/axe-mapping'
+          - '@a11y/api'
+          - '@a11y/dashboard'
+          - '@a11y/extension'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - name: Build ${{ matrix.workspace }}
+        run: pnpm --filter ${{ matrix.workspace }}... build
+      - name: Test ${{ matrix.workspace }}
+        run: pnpm --filter ${{ matrix.workspace }} test
+
+  # ---- Security scans (run on every PR, but allowed to be slower than the gate) ----
+  security:
+    name: Security scans
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Gitleaks (no committed secrets)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - name: pnpm audit (high severity only)
+        run: pnpm audit --audit-level high
+
+  # ---- Required-status aggregator: branch protection requires this single check ----
+  ci-success:
+    name: CI success
+    needs: [lint, type-check, build-and-test, security]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify all gates passed
+        run: |
+          if [[ "${{ needs.lint.result }}" != "success" \
+             || "${{ needs.type-check.result }}" != "success" \
+             || "${{ needs.build-and-test.result }}" != "success" \
+             || "${{ needs.security.result }}" != "success" ]]; then
+            echo "One or more required jobs failed"
+            exit 1
+          fi
+          echo "All required jobs passed"

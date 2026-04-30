@@ -1,0 +1,11 @@
+api:
+  replicas: 3
+
+dashboard:
+  replicas: 3
+
+worker:
+  replicas: 5
+
+ingress:
+  host: a11y.example.com

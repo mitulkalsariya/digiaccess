@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "A11y Audit (Internal)",
+  "version": "0.1.0",
+  "description": "Internal accessibility scanner for company web apps. WCAG 2.2 AA via axe-core.",
+  "permissions": ["activeTab", "scripting", "storage", "identity"],
+  "host_permissions": ["<all_urls>"],
+  "action": {
+    "default_popup": "src/popup/index.html",
+    "default_title": "Scan this page"
+  },
+  "background": {
+    "service_worker": "src/background.ts",
+    "type": "module"
+  },
+  "devtools_page": "src/devtools/index.html",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["src/content/highlight.ts"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/*"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

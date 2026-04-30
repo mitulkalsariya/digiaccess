@@ -1,0 +1,12 @@
+DROP POLICY IF EXISTS violations_delete ON "violations";
+DROP POLICY IF EXISTS violations_update ON "violations";
+DROP POLICY IF EXISTS violations_insert ON "violations";
+DROP POLICY IF EXISTS violations_select ON "violations";
+DROP POLICY IF EXISTS scans_delete ON "scans";
+DROP POLICY IF EXISTS scans_update ON "scans";
+DROP POLICY IF EXISTS scans_insert ON "scans";
+DROP POLICY IF EXISTS scans_select ON "scans";
+ALTER TABLE "violations" DISABLE ROW LEVEL SECURITY;
+ALTER TABLE "scans"      DISABLE ROW LEVEL SECURITY;
+DROP FUNCTION IF EXISTS app_current_team_ids();
+DROP FUNCTION IF EXISTS app_current_user_id();

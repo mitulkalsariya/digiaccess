@@ -1,0 +1,11 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/shared-types" },
+    { "path": "./packages/wcag-rules" },
+    { "path": "./packages/axe-mapping" },
+    { "path": "./apps/api" },
+    { "path": "./apps/dashboard" },
+    { "path": "./apps/extension" }
+  ]
+}

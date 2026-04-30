@@ -1,0 +1,98 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "a11y.fullname" . }}-api
+  labels: {{- include "a11y.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.api.replicas }}
+  selector:
+    matchLabels:
+      {{- include "a11y.selectorLabels" . | nindent 6 }}
+      component: api
+  template:
+    metadata:
+      labels:
+        {{- include "a11y.selectorLabels" . | nindent 8 }}
+        component: api
+    spec:
+      serviceAccountName: {{ include "a11y.fullname" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      # S-24: secrets mounted as files via projected volumes; the API reads
+      # them at boot. Env-var injection of credentials would put them at risk
+      # of leaking in core dumps and any shell that inspects /proc/<pid>/environ.
+      volumes:
+        - name: secrets
+          projected:
+            sources:
+              - secret:
+                  name: {{ .Values.secrets.databaseSecretName }}
+                  items: [{ key: url, path: database/url }]
+              - secret:
+                  name: {{ .Values.secrets.redisSecretName }}
+                  items: [{ key: url, path: redis/url }]
+              - secret:
+                  name: {{ .Values.secrets.jwtSecretName }}
+                  items: [{ key: secret, path: jwt/secret }]
+              - secret:
+                  name: {{ .Values.secrets.ssoSecretName }}
+                  items:
+                    - { key: issuer,        path: sso/issuer }
+                    - { key: client_id,     path: sso/client_id }
+                    - { key: client_secret, path: sso/client_secret }
+      containers:
+        - name: api
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.api.port }}
+              name: http
+          env:
+            {{- range $k, $v := .Values.api.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            # API reads these env vars and resolves the file paths at boot.
+            - { name: DATABASE_URL_FILE,      value: "/run/secrets/database/url" }
+            - { name: REDIS_URL_FILE,         value: "/run/secrets/redis/url" }
+            - { name: JWT_SECRET_FILE,        value: "/run/secrets/jwt/secret" }
+            - { name: SSO_ISSUER_FILE,        value: "/run/secrets/sso/issuer" }
+            - { name: SSO_CLIENT_ID_FILE,     value: "/run/secrets/sso/client_id" }
+            - { name: SSO_CLIENT_SECRET_FILE, value: "/run/secrets/sso/client_secret" }
+          volumeMounts:
+            - name: secrets
+              mountPath: /run/secrets
+              readOnly: true
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet: { path: /health/ready, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+          resources: {{- toYaml .Values.api.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "a11y.fullname" . }}-api
+  labels: {{- include "a11y.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      name: http
+  selector:
+    {{- include "a11y.selectorLabels" . | nindent 4 }}
+    component: api

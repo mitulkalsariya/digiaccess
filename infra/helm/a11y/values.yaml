@@ -1,0 +1,64 @@
+# Default values — overridden per environment by values.staging.yaml / values.prod.yaml.
+image:
+  repository: a11y-api
+  tag: latest
+  pullPolicy: IfNotPresent
+
+api:
+  replicas: 2
+  port: 3001
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: 1000m, memory: 1Gi }
+  env:
+    NODE_ENV: production
+    LOG_LEVEL: info
+    PORT: '3001'
+
+dashboard:
+  enabled: true
+  replicas: 2
+  port: 3000
+  image:
+    repository: a11y-dashboard
+    tag: latest
+
+worker:
+  enabled: true
+  replicas: 3
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits: { cpu: 2000m, memory: 2Gi }
+
+# Secrets are pulled from AWS Secrets Manager via External Secrets Operator (configured separately).
+secrets:
+  databaseSecretName: a11y-staging-postgres
+  redisSecretName: a11y-staging-redis
+  ssoSecretName: a11y-staging-sso
+  jwtSecretName: a11y-staging-jwt
+
+ingress:
+  enabled: true
+  className: alb
+  host: a11y.example.com
+  tlsSecretName: a11y-tls
+
+serviceAccount:
+  create: true
+  # IRSA — IAM role for Secrets Manager access
+  annotations:
+    eks.amazonaws.com/role-arn: ''
+
+# S-15: deny-by-default NetworkPolicy. Empty CIDR lists = block traffic that
+# class. Override per-environment with the actual VPC subnet ranges.
+networkPolicy:
+  enabled: true
+  dbCidrs: []
+  redisCidrs: []
+  idpCidrs: []
+
+# S-16: PSS-restricted namespace. Set namespace.create=false if the namespace
+# is provisioned out-of-band; the labels can be added manually.
+namespace:
+  create: false
+  name: a11y

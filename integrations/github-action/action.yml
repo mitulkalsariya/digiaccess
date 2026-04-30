@@ -1,0 +1,26 @@
+name: 'A11y PR Check'
+description: 'Run an a11y scan against a PR preview URL and fail the check on new violations'
+inputs:
+  app-id:
+    description: 'A11y site ID this PR belongs to'
+    required: true
+  preview-url:
+    description: 'URL to scan (the PR preview environment)'
+    required: true
+  baseline-branch:
+    description: 'Branch whose latest scan is the baseline (default: main)'
+    required: false
+    default: 'main'
+  fail-on-severity:
+    description: 'Fail the check if any new violation has at least this severity (critical|serious|moderate|minor)'
+    required: false
+    default: 'serious'
+  api-base:
+    description: 'A11y API base URL'
+    required: true
+  api-token:
+    description: 'A11y API token (use GitHub OIDC → API)'
+    required: true
+runs:
+  using: 'node20'
+  main: 'dist/index.js'

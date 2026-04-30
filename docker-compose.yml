@@ -1,0 +1,42 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: a11y-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: a11y
+      POSTGRES_PASSWORD: a11y_dev_only
+      POSTGRES_DB: a11y
+    ports:
+      - '127.0.0.1:5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U a11y -d a11y']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: a11y-redis
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --requirepass
+      - a11y_dev_only
+      - --appendonly
+      - 'yes'
+    ports:
+      - '127.0.0.1:6379:6379'
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', '-a', 'a11y_dev_only', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
+  redisdata:
