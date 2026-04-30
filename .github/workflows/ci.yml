@@ -25,7 +25,7 @@ jobs:
     outputs:
       pnpm-store: ${{ steps.pnpm-store.outputs.path }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v4
         with:
           version: ${{ env.PNPM_VERSION }}
@@ -46,7 +46,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v4
         with:
           version: ${{ env.PNPM_VERSION }}
@@ -64,7 +64,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v4
         with:
           version: ${{ env.PNPM_VERSION }}
@@ -91,7 +91,7 @@ jobs:
           - '@a11y/dashboard'
           - '@a11y/extension'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v4
         with:
           version: ${{ env.PNPM_VERSION }}
@@ -112,7 +112,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - name: Gitleaks (no committed secrets)
