@@ -1,5 +1,7 @@
 // Dev seed — creates a team, two users, one site. Idempotent.
-import { PrismaClient } from '@prisma/client';
+// @prisma/client is CJS; default-import + destructure to work under ESM.
+import prismaPkg from '@prisma/client';
+const { PrismaClient } = prismaPkg;
 
 const prisma = new PrismaClient();
 

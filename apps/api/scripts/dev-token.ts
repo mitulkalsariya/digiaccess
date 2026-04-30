@@ -11,7 +11,9 @@
 //   TOKEN=$(pnpm --filter @a11y/api exec tsx scripts/dev-token.ts alice@example.com)
 //   curl -H "Authorization: Bearer $TOKEN" http://localhost:3001/v1/scans
 import { createHmac } from 'node:crypto';
-import { PrismaClient } from '@prisma/client';
+// @prisma/client is CJS; default-import + destructure to work under ESM.
+import prismaPkg from '@prisma/client';
+const { PrismaClient } = prismaPkg;
 
 const args = process.argv.slice(2);
 if (args.length < 1) {
