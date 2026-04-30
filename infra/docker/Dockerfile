@@ -40,6 +40,13 @@ RUN DATABASE_URL="postgres://x" pnpm build
 #         image with a different filesystem layout.
 FROM builder AS api-bundle
 RUN pnpm --filter=@a11y/api --prod --legacy deploy /out
+# `prisma generate` (run during `pnpm build`) writes the generated client
+# into apps/api/node_modules/.prisma/client/. `pnpm deploy --legacy` copies
+# the @prisma/client package itself but NOT this sibling directory. Without
+# it, runtime fails with `Cannot find module '.prisma/client/default'`.
+# Copy it explicitly into /out so the deployed bundle is self-contained.
+RUN mkdir -p /out/node_modules/.prisma \
+ && cp -r /repo/apps/api/node_modules/.prisma/client /out/node_modules/.prisma/client
 
 # ---- 3b. Same treatment for the dashboard. ----
 FROM builder AS dashboard-bundle
