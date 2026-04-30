@@ -75,11 +75,12 @@ services:
       TRUST_PROXY: '172.16.0.0/12'
       APP_VERSION: ${APP_VERSION:-0.1.0}
     healthcheck:
-      # Distroless has no wget/curl/sh — use Node's built-in http module.
+      # Distroless has no wget/curl/sh and no `node` on PATH — the binary is
+      # at /nodejs/bin/node. Use Node's built-in http module to probe.
       test:
         [
           'CMD',
-          'node',
+          '/nodejs/bin/node',
           '-e',
           "require('http').get('http://localhost:3001/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))",
         ]
