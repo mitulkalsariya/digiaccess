@@ -24,6 +24,14 @@ coverage/
 .env.local
 .env.*.local
 
+# SSH / TLS private keys — never commit
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+
 # Generated samples (the script that creates them is committed; the artifact isn't)
 sample-finance-report.xlsx
 
