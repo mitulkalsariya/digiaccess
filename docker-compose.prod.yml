@@ -1,0 +1,135 @@
+# Production stack — runs on any Linux box with Docker installed.
+#
+#   ./infra/docker/init-env.sh platform.digisaral.com mitul@digisaral.com
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Recovery is `docker compose -f docker-compose.prod.yml down && up -d --build`
+# — no apt packages, no systemd, no host-level state to repair.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: a11y
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: a11y
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U a11y -d a11y']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - 'yes'
+      - --requirepass
+      - ${REDIS_PASSWORD}
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', '-a', '${REDIS_PASSWORD}', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Runs `prisma migrate deploy` once, then exits 0. Idempotent.
+  migrator:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile
+      target: migrator
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgresql://a11y:${POSTGRES_PASSWORD}@postgres:5432/a11y
+    restart: 'no'
+
+  api:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile
+      target: api
+    restart: unless-stopped
+    depends_on:
+      migrator: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    environment:
+      NODE_ENV: production
+      PORT: '3001'
+      HOST: '0.0.0.0'
+      LOG_LEVEL: info
+      DATABASE_URL: postgresql://a11y:${POSTGRES_PASSWORD}@postgres:5432/a11y
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      JWT_SECRET: ${JWT_SECRET}
+      CRED_ENCRYPTION_KEY: ${CRED_ENCRYPTION_KEY}
+      # S-8: trust only Caddy's container IP. Compose's default network gives
+      # caddy a stable hostname; trustProxy uses CIDR so we use the docker
+      # default subnet. Tighten to the actual network if you customise it.
+      TRUST_PROXY: '172.16.0.0/12'
+      APP_VERSION: ${APP_VERSION:-0.1.0}
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:3001/health']
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  worker:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile
+      target: worker
+    restart: unless-stopped
+    depends_on:
+      migrator: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: info
+      DATABASE_URL: postgresql://a11y:${POSTGRES_PASSWORD}@postgres:5432/a11y
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      JWT_SECRET: ${JWT_SECRET}
+      CRED_ENCRYPTION_KEY: ${CRED_ENCRYPTION_KEY}
+      WORKER_CONCURRENCY: '3'
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile
+      target: dashboard
+    restart: unless-stopped
+    depends_on:
+      api: { condition: service_healthy }
+    environment:
+      NODE_ENV: production
+      API_BASE: http://api:3001
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+      - '443:443/udp'
+    environment:
+      DOMAIN: ${DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+      - caddyconfig:/config
+    depends_on:
+      api: { condition: service_healthy }
+      dashboard: { condition: service_started }
+
+volumes:
+  pgdata:
+  redisdata:
+  caddydata:
+  caddyconfig:

@@ -1,0 +1,42 @@
+# Caddy reverse proxy + automatic Let's Encrypt TLS.
+#
+# {$DOMAIN} and {$ACME_EMAIL} are pulled from the .env via docker-compose's
+# environment block. Caddy auto-provisions and auto-renews TLS — no certbot,
+# no cron, no nginx config to babysit.
+
+{
+    email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+    encode zstd gzip
+
+    # API surfaces — anything we want exposed under the same host.
+    @api {
+        path /v1/* /auth/* /health /health/ready
+    }
+    handle @api {
+        reverse_proxy api:3001
+    }
+
+    # Everything else → Next.js dashboard.
+    handle {
+        reverse_proxy dashboard:3000
+    }
+
+    # Security headers (S-19 + general hardening; matches the nginx config).
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Frame-Options "DENY"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "geolocation=(), camera=(), microphone=()"
+        # Caddy sets Server: Caddy by default; remove it.
+        -Server
+    }
+
+    log {
+        output stdout
+        format console
+    }
+}

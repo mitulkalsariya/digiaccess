@@ -1,250 +1,191 @@
 # Deploy to AWS EC2 — end-to-end
 
-Targets: a single t3.medium Ubuntu 22.04 VM. Cheapest production path (≈ $30/mo
-on-demand, ≈ $15/mo with a 1-year reservation). All three services + Postgres +
-Redis run on the same box; for HA later, lift-and-shift to the existing
-[Helm chart](infra/helm/a11y/).
+Targets: a single t3.medium Ubuntu 22.04 VM (≈ $30/mo on-demand, ≈ $15/mo
+reserved). Two paths, pick one:
 
-Two phases: ① push → GitHub, ② AWS provision → bootstrap → deploy.
+| Path | What runs on the host | When to use |
+|---|---|---|
+| **A. Docker Compose** *(recommended)* | Just Docker. App + DB + Redis + Caddy all in containers. | Default. Simpler bootstrap, simpler recovery. |
+| B. Native systemd | Node, Postgres, Redis, nginx, certbot installed on the host directly | Strict policy disallows Docker, or you want zero container overhead. |
+
+Both end up serving the same code on the same VM with TLS via Let's Encrypt;
+only the operational shape differs. For HA later, both lift-and-shift to the
+existing [Helm chart](infra/helm/a11y/) without app changes.
 
 ---
 
-## Phase 1 — push the code
+## Path A — Docker Compose (recommended)
 
-(Run these on your laptop, in `/Users/mitulkalsariya/Desktop/Digiaccess`.)
+### A.1 — Push (laptop, one-time)
 
 ```bash
+cd /Users/mitulkalsariya/Desktop/Digiaccess
 git push -u origin main
 ```
 
-If GitHub rejects the password prompt, either install [GitHub CLI](https://cli.github.com)
-and run `gh auth login`, or create a Personal Access Token at
-<https://github.com/settings/tokens?type=beta>, give it `repo` scope, and use
-the token instead of the password. Once the push succeeds, the rest of this doc
-runs on the EC2 box.
+### A.2 — Provision the VM (AWS console)
+
+- EC2 → Launch instance
+- AMI: **Ubuntu Server 22.04 LTS** (or 24.04)
+- Instance type: **t3.medium** (2 vCPU / 4 GB)
+- Key pair: select **`digiaccess`** (the one whose .pem you have)
+- Security group, inbound:
+  - SSH (22) from **My IP**
+  - HTTP (80) — Anywhere
+  - HTTPS (443) — Anywhere
+- Storage: **30 GB gp3**
+- Launch.
+
+Note the public IPv4 — call it `<EC2_IP>`.
+
+### A.3 — DNS
+
+In Cloudflare (digisaral.com is delegated there):
+
+- DNS → Records → **Add record**
+- Type: **A**, Name: `platform`, IPv4: `<EC2_IP>`
+- Proxy status: **DNS only** (grey cloud — needed for Let's Encrypt's HTTP-01
+  challenge to reach the box)
+- Save.
+
+Verify from your laptop:
+
+```bash
+dig +short A platform.digisaral.com
+# Should print <EC2_IP>
+```
+
+### A.4 — SSH and deploy
+
+```bash
+ssh -i ~/.ssh/digiaccess.pem ubuntu@platform.digisaral.com
+
+# 1. Install Docker (one-time per VM)
+curl -fsSL https://raw.githubusercontent.com/mitulkalsariya/digiaccess/main/infra/docker/install-docker.sh \
+  | sudo bash
+
+# 2. Re-login so the docker group takes effect
+exit
+ssh -i ~/.ssh/digiaccess.pem ubuntu@platform.digisaral.com
+
+# 3. Pull the repo
+git clone https://github.com/mitulkalsariya/digiaccess.git ~/a11y
+cd ~/a11y
+
+# 4. Generate .env with random secrets
+./infra/docker/init-env.sh platform.digisaral.com mitul@digisaral.com
+
+# 5. Build and start (5–10 min: Chromium download + Next.js build + image layers)
+docker compose -f docker-compose.prod.yml up -d --build
+
+# 6. Verify
+docker compose -f docker-compose.prod.yml ps
+curl -fsS https://platform.digisaral.com/health
+```
+
+Caddy provisions the TLS certificate automatically on first start — no
+certbot, no cron, no nginx config to babysit.
+
+### A.5 — Updates
+
+```bash
+cd ~/a11y
+git pull
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+The `migrator` container re-runs `prisma migrate deploy` (idempotent); api,
+worker, dashboard reload with the new image.
+
+### A.6 — Logs / rollback / recovery
+
+Full ops notes are in [infra/docker/README.md](infra/docker/README.md).
+
+Quick reference:
+```bash
+# Logs
+docker compose -f docker-compose.prod.yml logs -f api
+docker compose -f docker-compose.prod.yml logs -f worker
+docker compose -f docker-compose.prod.yml logs -f caddy
+
+# Status
+docker compose -f docker-compose.prod.yml ps
+
+# Rollback
+git checkout <previous-sha>
+docker compose -f docker-compose.prod.yml up -d --build
+
+# Nuclear recovery (data preserved — pgdata/redisdata are volumes)
+docker compose -f docker-compose.prod.yml down
+docker compose -f docker-compose.prod.yml up -d --build
+```
 
 ---
 
-## Phase 2 — AWS
+## Path B — Native systemd (alternative)
 
-### 2.1  Provision the VM
+This is the original guide. Use Path A unless you have a reason not to.
 
-**Console path:**
-
-1. EC2 → Launch instance.
-2. **Name**: `a11y`.
-3. **AMI**: Ubuntu Server 22.04 LTS (or 24.04 LTS), 64-bit (x86).
-4. **Instance type**: `t3.medium` (2 vCPU / 4 GB RAM). Anything smaller will
-   thrash when Chromium spawns; bigger if you need >5 concurrent scans.
-5. **Key pair**: create one named `a11y` and download the `.pem`. `chmod 400`
-   it on your laptop.
-6. **Security group** — create new, inbound rules:
-   - SSH (22) from **My IP** (NOT 0.0.0.0/0)
-   - HTTP (80) from anywhere — needed only for Let's Encrypt's HTTP-01
-   - HTTPS (443) from anywhere
-7. **Storage**: 30 GB gp3.
-8. Launch.
-
-**CLI path** (alternative):
-```bash
-aws ec2 run-instances \
-  --image-id ami-0c7217cdde317cfec  \  # ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*
-  --instance-type t3.medium \
-  --key-name a11y \
-  --security-group-ids sg-xxxxxxxx \
-  --block-device-mappings 'DeviceName=/dev/sda1,Ebs={VolumeSize=30,VolumeType=gp3}' \
-  --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=a11y}]'
-```
-
-Note the public IPv4 address — you'll use it as `<EC2_IP>` below.
-
-### 2.2  (Optional) DNS
-
-If you have a domain, add an `A` record pointing
-`a11y.your-company.com` → `<EC2_IP>`. Without a domain, you can still run on
-HTTP using the EC2 public hostname — TLS via Let's Encrypt requires a real DNS
-name though.
-
-### 2.3  SSH in
-
-```bash
-ssh -i ~/.ssh/a11y.pem ubuntu@<EC2_IP>
-```
-
-### 2.4  Bootstrap the box (one-time)
-
-This installs Node, Postgres 16, Redis 7, nginx, certbot, generates random
-secrets, and sets up the firewall. Run it directly from GitHub:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/mitulkalsariya/digiaccess/main/infra/single-vm/scripts/bootstrap.sh \
-  | sudo bash -s -- \
-      --domain a11y.your-company.com \
-      --email you@your-company.com
-```
-
-If you don't have a domain yet, pass `--domain $(curl -s ifconfig.me)` to use
-the EC2 public IP — you can swap to a real domain later by re-running the
-script (idempotent).
-
-### 2.5  Wire up the nginx site
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/mitulkalsariya/digiaccess/main/infra/single-vm/nginx/a11y.conf \
-  | sudo sed "s/REPLACE_DOMAIN/a11y.your-company.com/g" \
-  | sudo tee /etc/nginx/sites-available/a11y > /dev/null
-
-sudo ln -sf /etc/nginx/sites-available/a11y /etc/nginx/sites-enabled/a11y
-sudo rm -f /etc/nginx/sites-enabled/default
-sudo nginx -t && sudo systemctl reload nginx
-```
-
-### 2.6  TLS (only if you have a real DNS name pointing at the box)
-
-```bash
-sudo certbot --nginx \
-  --domain a11y.your-company.com \
-  --email you@your-company.com \
-  --agree-tos --redirect --non-interactive
-```
-
-certbot rewrites the nginx config in-place to use the new cert and adds the
-auto-renewal cron. **Skip this step if you're testing on the bare EC2 IP** —
-nginx will serve via the snake-oil cert and the browser will warn (acceptable
-for first verification).
-
-### 2.7  Pull the app + start the services
-
-```bash
-sudo env GIT_REPO=https://github.com/mitulkalsariya/digiaccess.git \
-  bash -c 'curl -fsSL https://raw.githubusercontent.com/mitulkalsariya/digiaccess/main/infra/single-vm/scripts/deploy.sh | bash'
-```
-
-What this does:
-
-1. Clones the repo into `/opt/a11y/repo` (owned by the unprivileged `a11y` user).
-2. `pnpm install --frozen-lockfile` (locked deps, reproducible).
-3. `pnpm build` — TypeScript compile, Prisma client generate, dashboard build.
-4. `prisma migrate deploy` — applies all 3 migrations against the local DB.
-5. Installs the three systemd unit files.
-6. Starts (or restarts) `a11y-api`, `a11y-worker`, `a11y-dashboard`.
-7. Polls `/health/ready` for ≤ 24s, fails the deploy if it doesn't come up.
-
-Expected duration: 3–6 minutes (Playwright downloads Chromium on the first
-worker start — about 200 MB).
-
-### 2.8  Verify
-
-```bash
-# On the VM:
-sudo systemctl status a11y-api a11y-worker a11y-dashboard
-curl -s http://127.0.0.1:3001/health/ready
-
-# From your laptop:
-curl https://a11y.your-company.com/health
-# {"status":"ok","version":"0.1.0",...}
-```
-
-Open `https://a11y.your-company.com/` in a browser — you should see the
-dashboard's "Sites" page.
+Full step-by-step in [infra/single-vm/README.md](infra/single-vm/README.md).
+Two scripts (`bootstrap.sh` + `deploy.sh`) install Node, Postgres 16, Redis 7,
+nginx, and certbot on the host directly, then run the API/worker/dashboard as
+systemd services.
 
 ---
 
-## Phase 3 — make it usable
+## Phase 3 — make it usable (both paths)
 
-The fresh deploy boots with dev SSO defaults. Two more things before real use:
+### Real SSO
 
-### 3.1  Real SSO
-
-Register your tool at the IdP with the redirect URI:
+Register the tool at your IdP with the redirect URI:
 ```
-https://a11y.your-company.com/auth/callback
+https://platform.digisaral.com/auth/callback
 ```
 
-Then put the issuer + credentials into the secrets directory:
+For the Docker path, append the values to `~/a11y/.env` and restart:
 
+```env
+SSO_ISSUER=https://your-org.okta.com
+SSO_CLIENT_ID=0oa...
+SSO_CLIENT_SECRET=...
+```
+
+Then `docker compose -f docker-compose.prod.yml up -d`. The api container
+picks up the new env vars on restart.
+
+For the systemd path, add `*_FILE` env vars to the api unit (see
+`infra/single-vm/README.md` for details).
+
+### Seed your team + sites
+
+Docker:
 ```bash
-sudo install -o a11y -g a11y -m 600 /dev/stdin \
-  /etc/a11y/secrets/sso_issuer        <<< "https://your-org.okta.com"
-sudo install -o a11y -g a11y -m 600 /dev/stdin \
-  /etc/a11y/secrets/sso_client_id     <<< "0oa..."
-sudo install -o a11y -g a11y -m 600 /dev/stdin \
-  /etc/a11y/secrets/sso_client_secret <<< "..."
+cd ~/a11y
+docker compose -f docker-compose.prod.yml exec migrator \
+  pnpm exec tsx prisma/seed.ts
 ```
 
-Add the `*_FILE` env vars to the API systemd unit and reload:
-
-```bash
-sudo systemctl edit a11y-api
-# In the editor, add:
-#   [Service]
-#   Environment=SSO_ISSUER_FILE=/etc/a11y/secrets/sso_issuer
-#   Environment=SSO_CLIENT_ID_FILE=/etc/a11y/secrets/sso_client_id
-#   Environment=SSO_CLIENT_SECRET_FILE=/etc/a11y/secrets/sso_client_secret
-
-sudo systemctl restart a11y-api
-```
-
-### 3.2  Seed your team + sites
-
-```bash
-sudo -u a11y bash -c 'cd /opt/a11y/repo/apps/api && \
-  DATABASE_URL=$(cat /etc/a11y/secrets/database_url) \
-  pnpm exec tsx prisma/seed.ts'
-```
-
-That creates a `platform` team with two test users. Edit
-`apps/api/prisma/seed.ts` for your real org, push, and re-deploy — `db.seed`
-is idempotent.
+Edit `apps/api/prisma/seed.ts` for your real org, push, redeploy.
 
 ---
 
-## Ongoing — push & deploy
+## When to graduate to AWS EKS
 
-Every subsequent change:
+If you need any of:
+- Multi-AZ HA (Postgres failover, multiple API replicas)
+- Burstable scan capacity (>10 concurrent scans)
+- Org-policy compliance for managed DB / KMS encryption at rest
 
-```bash
-# On your laptop:
-git push origin main
+…the existing [Helm chart](infra/helm/a11y/) and
+[Terraform modules](infra/terraform/) are the upgrade. Same application code,
+different deploy target.
 
-# On the VM (or via your favorite CI/CD trigger):
-sudo bash /opt/a11y/repo/infra/single-vm/scripts/deploy.sh
-```
-
-To deploy a tagged release: `sudo env GIT_REF=v0.2.0 bash /opt/a11y/repo/infra/single-vm/scripts/deploy.sh`.
-To roll back: same command with `GIT_REF=<previous-sha>`.
-
-## Logs / debugging
-
-| Command | What |
-|---|---|
-| `sudo journalctl -u a11y-api -f` | live API log |
-| `sudo journalctl -u a11y-worker -f` | live worker log (scan jobs) |
-| `sudo journalctl -u a11y-dashboard -f` | Next.js |
-| `sudo systemctl status a11y-api` | running state + last 10 lines |
-| `tail -f /var/log/a11y/api.log` | append-only file (logrotate compresses daily) |
-| `sudo nginx -t` | validate nginx config before reload |
-
-## Backups
-
-Set up a nightly `pg_dump` to S3 (or wherever):
-
-```bash
-sudo crontab -u postgres -e
-# 0 3 * * *  pg_dump --format=custom a11y | aws s3 cp - s3://your-backups/a11y-$(date +\%F).pgdump
-```
-
-For point-in-time recovery (RPO < 1 day), graduate to RDS via the existing
-[infra/terraform/](infra/terraform/) modules.
-
-## Cost
+## Cost (Path A)
 
 | Item | Monthly |
 |---|---|
 | t3.medium on-demand | ≈ $30 |
-| 30 GB gp3 storage | ≈ $3 |
-| Data transfer out (light internal use) | ≈ $1 |
-| Let's Encrypt cert | $0 |
+| 30 GB gp3 | ≈ $3 |
+| Data transfer (light internal use) | ≈ $1 |
+| Let's Encrypt cert (via Caddy) | $0 |
 | **Total** | **≈ $34** |
-
-A 1-year reserved t3.medium drops the EC2 line to ≈ $15/mo.
