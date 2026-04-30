@@ -4,17 +4,12 @@
 generator client {
   provider      = "prisma-client-js"
   // We ship to multiple Linux flavors:
-  //   - Alpine/musl       — used by builder + migrator (node:alpine)
-  //   - Debian/glibc      — used by api (distroless debian12) + worker (Playwright jammy)
-  //   - native            — local dev (macOS/Linux)
-  // Both arches included so x86 + Graviton EC2 work without further changes.
-  binaryTargets = [
-    "native",
-    "linux-musl-openssl-3.0.x",
-    "linux-musl-arm64-openssl-3.0.x",
-    "debian-openssl-3.0.x",
-    "linux-arm64-openssl-3.0.x",
-  ]
+  //   - Alpine/musl       used by builder + migrator (node:alpine)
+  //   - Debian/glibc      used by api (distroless debian12) + worker (Playwright jammy)
+  //   - native            local dev (macOS/Linux)
+  // Both x86 and arm64 included so EC2 c-class + Graviton work without changes.
+  // NB: Prisma's schema parser requires this array on a single line.
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x", "linux-musl-arm64-openssl-3.0.x", "debian-openssl-3.0.x", "linux-arm64-openssl-3.0.x"]
 }
 
 datasource db {
