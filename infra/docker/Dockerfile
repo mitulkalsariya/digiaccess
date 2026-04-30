@@ -25,6 +25,10 @@ COPY --from=pruner /repo/out/json/ ./
 COPY --from=pruner /repo/out/pnpm-lock.yaml ./pnpm-lock.yaml
 RUN pnpm install --frozen-lockfile --prod=false
 COPY --from=pruner /repo/out/full/ ./
+# Root-level config files the workspaces' tsconfigs extend from. `turbo prune`
+# doesn't include these by default, so each package's `tsc -p tsconfig.json`
+# fails with TS5083 "Cannot read file '/repo/tsconfig.base.json'".
+COPY --from=pruner /repo/tsconfig.base.json /repo/tsconfig.json /repo/turbo.json ./
 # DATABASE_URL is needed for `prisma generate` during the api build; the value
 # here is just for codegen — real migrations happen in the migrator container.
 RUN DATABASE_URL="postgres://x" pnpm build
@@ -69,10 +73,10 @@ CMD ["node", "apps/api/dist/worker.js"]
 #        worker containers wait for this to complete before they start.
 FROM node:${NODE_VERSION}-alpine AS migrator
 WORKDIR /app
-RUN apk add --no-cache openssl
+RUN apk add --no-cache openssl && npm install -g pnpm@10
 COPY --from=builder /repo /repo
 WORKDIR /repo/apps/api
-CMD ["sh", "-c", "node_modules/.bin/prisma migrate deploy"]
+CMD ["pnpm", "exec", "prisma", "migrate", "deploy"]
 
 # ---- 4d. Dashboard runtime: Next.js production server.
 FROM node:${NODE_VERSION}-alpine AS dashboard
