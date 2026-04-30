@@ -41,12 +41,18 @@ RUN DATABASE_URL="postgres://x" pnpm build
 FROM builder AS api-bundle
 RUN pnpm --filter=@a11y/api --prod --legacy deploy /out
 # `prisma generate` (run during `pnpm build`) writes the generated client
-# into apps/api/node_modules/.prisma/client/. `pnpm deploy --legacy` copies
-# the @prisma/client package itself but NOT this sibling directory. Without
-# it, runtime fails with `Cannot find module '.prisma/client/default'`.
-# Copy it explicitly into /out so the deployed bundle is self-contained.
-RUN mkdir -p /out/node_modules/.prisma \
- && cp -r /repo/apps/api/node_modules/.prisma/client /out/node_modules/.prisma/client
+# into a `.prisma/client/` directory. Where exactly varies: on macOS pnpm
+# hoists it to apps/api/node_modules/.prisma/client/, on Alpine it lives
+# inside node_modules/.pnpm/@prisma+client@.../node_modules/.prisma/client/.
+# Either way, `pnpm deploy --legacy` doesn't copy that directory into /out
+# and runtime fails with `Cannot find module '.prisma/client/default'`.
+# Find it wherever pnpm put it and copy into the deployed bundle.
+RUN set -e; \
+    PRISMA_DIR=$(find /repo -path '*/node_modules/.prisma/client' -type d -not -path '*/out/*' 2>/dev/null | head -1); \
+    [ -n "$PRISMA_DIR" ] || { echo "could not locate generated .prisma/client"; find /repo -name '.prisma' -type d 2>/dev/null; exit 1; }; \
+    echo "found generated client at: $PRISMA_DIR"; \
+    mkdir -p /out/node_modules/.prisma; \
+    cp -r "$PRISMA_DIR" /out/node_modules/.prisma/client
 
 # ---- 3b. Same treatment for the dashboard. ----
 FROM builder AS dashboard-bundle
